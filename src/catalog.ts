@@ -21,11 +21,17 @@ export type MaterialEntry = {
   dodgeBonus: number;
 };
 
+export type TokenEntry = {
+  name: string;
+  description: string;
+};
+
 export type GameCatalog = {
   races: CatalogEntry[];
   classes: CatalogEntry[];
   materials: MaterialEntry[];
   weapons: WeaponItem[];
+  tokens: TokenEntry[];
 };
 
 const CATALOG_STORAGE_KEY = "durands-game-catalog-v3";
@@ -36,6 +42,29 @@ const DEFAULT_MATERIALS: MaterialEntry[] = [
   { name: "Cloth", armorBonus: 0, dodgeBonus: 0 },
   { name: "Steel", armorBonus: 0, dodgeBonus: 0 },
   { name: "Kevlar", armorBonus: 0, dodgeBonus: 0 },
+];
+
+const DEFAULT_TOKENS: TokenEntry[] = [
+  {
+    name: "Exhaustion",
+    description:
+      "When applied, temporarily reduces total Tension Rounds by 2 per token. Exhaustion tokens are lost after 2 days of rest without gaining a new Exhaustion token.",
+  },
+  {
+    name: "Heat",
+    description:
+      "Gained when cold skills are used too much. Buildup = Level + Resilience + bonus − Heat token value. If buildup is negative, make a DC 18 + ⌊total tokens ÷ 3⌋ saving throw vs Resilience or spontaneously explode. Gaining a Heat token removes an equivalent Cold token.",
+  },
+  {
+    name: "Cold",
+    description:
+      "Gained when heat skills are used too much. Buildup = Level + Resilience + bonus − Cold token value. If buildup is negative, make a DC 18 + ⌊total tokens ÷ 3⌋ saving throw vs Resilience or freeze solid. Gaining a Cold token removes an equivalent Heat token.",
+  },
+  {
+    name: "Worn Out",
+    description:
+      "Reduces Hit Chance by 1 per token. Stacks up to 10; at 10 stacks, gain 1 Exhaustion token and Worn Out resets to 0. One Worn Out token is removed for every minute spent resting.",
+  },
 ];
 
 const DEFAULT_CATALOG: GameCatalog = {
@@ -60,6 +89,7 @@ const DEFAULT_CATALOG: GameCatalog = {
   ],
   materials: cloneMaterials(DEFAULT_MATERIALS),
   weapons: [],
+  tokens: cloneTokens(DEFAULT_TOKENS),
 };
 
 let catalog: GameCatalog = loadCatalog();
@@ -104,6 +134,50 @@ export function getWeapon(name: string): WeaponItem | null {
     (entry) => entry.name.toLowerCase() === name.trim().toLowerCase(),
   );
   return found ? { ...found } : null;
+}
+
+export function getTokenNames(): string[] {
+  return catalog.tokens.map((entry) => entry.name);
+}
+
+export function getTokens(): TokenEntry[] {
+  return catalog.tokens.map((entry) => ({ ...entry }));
+}
+
+export function getToken(name: string): TokenEntry | null {
+  const found = catalog.tokens.find(
+    (entry) => entry.name.toLowerCase() === name.trim().toLowerCase(),
+  );
+  return found ? { ...found } : null;
+}
+
+export function addToken(name: string, description = ""): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return "Name is required.";
+  if (
+    catalog.tokens.some(
+      (entry) => entry.name.toLowerCase() === trimmed.toLowerCase(),
+    )
+  ) {
+    return "That token already exists.";
+  }
+  catalog = {
+    ...catalog,
+    tokens: [
+      ...catalog.tokens,
+      { name: trimmed, description: description.trim() },
+    ],
+  };
+  persistCatalog();
+  return null;
+}
+
+export function removeToken(name: string): boolean {
+  const next = catalog.tokens.filter((entry) => entry.name !== name);
+  if (next.length === catalog.tokens.length) return false;
+  catalog = { ...catalog, tokens: next };
+  persistCatalog();
+  return true;
 }
 
 export function getRaceModifiers(race: string): StatModifiers {
@@ -359,6 +433,7 @@ function parseCatalog(data: unknown): GameCatalog | null {
     classes,
     materials: ensureDefaultMaterials(parseMaterials(raw.materials)),
     weapons: parseCatalogWeapons(raw.weapons),
+    tokens: ensureDefaultTokens(parseTokens(raw.tokens)),
   };
 }
 
@@ -411,6 +486,68 @@ function parseMaterials(value: unknown): MaterialEntry[] {
   }
 
   return entries;
+}
+
+function parseTokens(value: unknown): TokenEntry[] {
+  if (!Array.isArray(value)) return [];
+  const entries: TokenEntry[] = [];
+  const seen = new Set<string>();
+
+  for (const item of value) {
+    if (typeof item === "string") {
+      const name = item.trim();
+      if (!name || seen.has(name.toLowerCase())) continue;
+      seen.add(name.toLowerCase());
+      entries.push({ name, description: "" });
+      continue;
+    }
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Record<string, unknown>;
+    if (typeof raw.name !== "string") continue;
+    const name = raw.name.trim();
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    entries.push({
+      name,
+      description:
+        typeof raw.description === "string" ? raw.description.trim() : "",
+    });
+  }
+
+  return entries;
+}
+
+function ensureDefaultTokens(tokens: TokenEntry[]): TokenEntry[] {
+  const byName = new Map(
+    tokens.map((entry) => [entry.name.toLowerCase(), entry]),
+  );
+  for (const defaults of DEFAULT_TOKENS) {
+    const existing = byName.get(defaults.name.toLowerCase());
+    if (!existing) {
+      byName.set(defaults.name.toLowerCase(), { ...defaults });
+    } else if (!existing.description.trim()) {
+      byName.set(defaults.name.toLowerCase(), {
+        ...existing,
+        description: defaults.description,
+      });
+    }
+  }
+
+  const merged: TokenEntry[] = [];
+  const used = new Set<string>();
+  for (const defaults of DEFAULT_TOKENS) {
+    const existing = byName.get(defaults.name.toLowerCase());
+    if (existing) {
+      merged.push(existing);
+      used.add(defaults.name.toLowerCase());
+    }
+  }
+  for (const entry of tokens) {
+    if (used.has(entry.name.toLowerCase())) continue;
+    merged.push(entry);
+    used.add(entry.name.toLowerCase());
+  }
+  return merged;
 }
 
 function parseCatalogWeapons(value: unknown): WeaponItem[] {
@@ -475,6 +612,10 @@ function cloneMaterials(source: MaterialEntry[]): MaterialEntry[] {
   return source.map((entry) => ({ ...entry }));
 }
 
+function cloneTokens(source: TokenEntry[]): TokenEntry[] {
+  return source.map((entry) => ({ ...entry }));
+}
+
 function cloneCatalog(source: GameCatalog): GameCatalog {
   return {
     races: source.races.map((entry) => ({
@@ -487,5 +628,6 @@ function cloneCatalog(source: GameCatalog): GameCatalog {
     })),
     materials: cloneMaterials(source.materials),
     weapons: source.weapons.map((entry) => ({ ...entry })),
+    tokens: cloneTokens(source.tokens),
   };
 }

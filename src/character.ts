@@ -14,6 +14,13 @@ export type WeaponItem = {
   specialAbility: string;
 };
 
+export type TokenSlot = {
+  name: string;
+  count: number;
+};
+
+export const TOKEN_SLOT_COUNT = 6;
+
 export type Character = {
   name: string;
   level: number;
@@ -39,6 +46,7 @@ export type Character = {
   armorRightLegCurrent: number;
   armorSpecial: number;
   armorSpecialCurrent: number;
+  tokenSlots: TokenSlot[];
   currentHealth: number;
   maxHealth: number;
   strength: number;
@@ -208,6 +216,137 @@ export function calculateDodgeAdjust(
   );
 }
 
+export const EXHAUSTION_TOKEN_NAME = "Exhaustion";
+export const EXHAUSTION_TENSION_PENALTY = 2;
+export const HEAT_TOKEN_NAME = "Heat";
+export const COLD_TOKEN_NAME = "Cold";
+export const WORN_OUT_TOKEN_NAME = "Worn Out";
+export const WORN_OUT_MAX_STACK = 10;
+
+export function namedTokenCount(
+  tokenSlots: TokenSlot[],
+  tokenName: string,
+): number {
+  const target = tokenName.trim().toLowerCase();
+  return tokenSlots.reduce((total, slot) => {
+    if (slot.name.trim().toLowerCase() !== target) return total;
+    return total + Math.max(0, slot.count);
+  }, 0);
+}
+
+export function exhaustionTokenCount(tokenSlots: TokenSlot[]): number {
+  return namedTokenCount(tokenSlots, EXHAUSTION_TOKEN_NAME);
+}
+
+/** Cap Worn Out at 10; crossing 10 grants 1 Exhaustion. */
+export function applyWornOutRules(
+  previous: TokenSlot[],
+  next: TokenSlot[],
+): { slots: TokenSlot[]; gainedExhaustion: boolean; capped: boolean } {
+  let slots = next.map((slot) => ({ ...slot }));
+  let worn = namedTokenCount(slots, WORN_OUT_TOKEN_NAME);
+  let capped = false;
+
+  if (worn > WORN_OUT_MAX_STACK) {
+    capped = true;
+    let excess = worn - WORN_OUT_MAX_STACK;
+    for (let i = slots.length - 1; i >= 0 && excess > 0; i -= 1) {
+      if (slots[i].name.trim().toLowerCase() !== WORN_OUT_TOKEN_NAME.toLowerCase()) {
+        continue;
+      }
+      const take = Math.min(slots[i].count, excess);
+      slots[i] = { ...slots[i], count: slots[i].count - take };
+      excess -= take;
+    }
+    worn = WORN_OUT_MAX_STACK;
+  }
+
+  const previousWorn = namedTokenCount(previous, WORN_OUT_TOKEN_NAME);
+  let gainedExhaustion = false;
+  if (previousWorn < WORN_OUT_MAX_STACK && worn >= WORN_OUT_MAX_STACK) {
+    slots = addNamedTokenCount(slots, EXHAUSTION_TOKEN_NAME, 1);
+    slots = slots.map((slot) =>
+      slot.name.trim().toLowerCase() === WORN_OUT_TOKEN_NAME.toLowerCase()
+        ? { ...slot, count: 0 }
+        : slot,
+    );
+    gainedExhaustion = true;
+  }
+
+  return { slots, gainedExhaustion, capped };
+}
+
+function addNamedTokenCount(
+  tokenSlots: TokenSlot[],
+  tokenName: string,
+  amount: number,
+): TokenSlot[] {
+  if (amount <= 0) return tokenSlots.map((slot) => ({ ...slot }));
+  const target = tokenName.trim().toLowerCase();
+  const slots = tokenSlots.map((slot) => ({ ...slot }));
+  const existing = slots.findIndex(
+    (slot) => slot.name.trim().toLowerCase() === target,
+  );
+  if (existing >= 0) {
+    slots[existing] = {
+      ...slots[existing],
+      count: clampNumber(slots[existing].count + amount, 0, 9999),
+    };
+    return slots;
+  }
+  const empty = slots.findIndex((slot) => !slot.name.trim());
+  if (empty >= 0) {
+    slots[empty] = { name: tokenName, count: clampNumber(amount, 0, 9999) };
+    return slots;
+  }
+  // No free slot — fold into the first slot as Exhaustion if needed.
+  slots[0] = {
+    name: tokenName,
+    count: clampNumber(amount, 0, 9999),
+  };
+  return slots;
+}
+
+/** Heat and Cold cancel each other one-for-one. */
+export function reconcileHeatAndCold(tokenSlots: TokenSlot[]): TokenSlot[] {
+  const heat = namedTokenCount(tokenSlots, HEAT_TOKEN_NAME);
+  const cold = namedTokenCount(tokenSlots, COLD_TOKEN_NAME);
+  const cancel = Math.min(heat, cold);
+  if (cancel <= 0) {
+    return tokenSlots.map((slot) => ({ ...slot }));
+  }
+
+  let heatLeft = cancel;
+  let coldLeft = cancel;
+
+  return tokenSlots.map((slot) => {
+    const name = slot.name.trim().toLowerCase();
+    if (name === HEAT_TOKEN_NAME.toLowerCase() && heatLeft > 0) {
+      const take = Math.min(slot.count, heatLeft);
+      heatLeft -= take;
+      return { ...slot, count: slot.count - take };
+    }
+    if (name === COLD_TOKEN_NAME.toLowerCase() && coldLeft > 0) {
+      const take = Math.min(slot.count, coldLeft);
+      coldLeft -= take;
+      return { ...slot, count: slot.count - take };
+    }
+    return { ...slot };
+  });
+}
+
+/** Tension rounds = Res ADJ (⌊res/3⌋ min 1, or res if ≤0) + 1 per five levels, minus 2 per Exhaustion token. */
+export function calculateTensionRounds(
+  resilience: number,
+  level: number,
+  tokenSlots: TokenSlot[] = [],
+): number {
+  const base = calculateAdj(resilience) + Math.floor(level / 5);
+  const penalty =
+    exhaustionTokenCount(tokenSlots) * EXHAUSTION_TENSION_PENALTY;
+  return base - penalty;
+}
+
 /** Armor slot base value from armor type and max health. */
 export function armorBaseValue(armorType: string, maxHealth: number): number {
   const hp = Math.max(0, maxHealth);
@@ -253,6 +392,13 @@ export function armorSlotsFromType(
   };
 }
 
+export function blankTokenSlots(): TokenSlot[] {
+  return Array.from({ length: TOKEN_SLOT_COUNT }, () => ({
+    name: "",
+    count: 0,
+  }));
+}
+
 export function createBlankCharacter(): Character {
   return {
     name: "",
@@ -279,6 +425,7 @@ export function createBlankCharacter(): Character {
     armorRightLegCurrent: 0,
     armorSpecial: 0,
     armorSpecialCurrent: 0,
+    tokenSlots: blankTokenSlots(),
     currentHealth: 3,
     maxHealth: 3,
     strength: 1,
@@ -443,6 +590,7 @@ export function parseCharacter(data: unknown): Character | null {
       0,
       clampNumber(Number(raw.armorSpecial ?? blank.armorSpecial), 0, 999),
     ),
+    tokenSlots: parseTokenSlots(raw.tokenSlots),
     currentHealth,
     maxHealth,
     strength: clampNumber(Number(raw.strength ?? blank.strength), -999, 999),
@@ -469,6 +617,24 @@ export function parseCharacter(data: unknown): Character | null {
     history: typeof raw.history === "string" ? raw.history : blank.history,
     notes: typeof raw.notes === "string" ? raw.notes : blank.notes,
   };
+}
+
+function parseTokenSlots(value: unknown): TokenSlot[] {
+  const slots = blankTokenSlots();
+  if (!Array.isArray(value)) return slots;
+
+  for (let i = 0; i < TOKEN_SLOT_COUNT; i += 1) {
+    const entry = value[i];
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as Record<string, unknown>;
+    const name = typeof raw.name === "string" ? raw.name.trim() : "";
+    slots[i] = {
+      name,
+      count: clampNumber(Number(raw.count ?? 0), 0, 9999),
+    };
+  }
+
+  return slots;
 }
 
 function parseWeapons(value: unknown): WeaponItem[] {

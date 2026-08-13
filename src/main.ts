@@ -3,6 +3,7 @@ import {
   addClass,
   addMaterial,
   addRace,
+  addToken,
   addWeapon as addCatalogWeapon,
   formatMaterialBonuses,
   formatModifiers,
@@ -15,17 +16,22 @@ import {
   getMaterials,
   getRaceModifiers,
   getRaceNames,
+  getToken,
+  getTokenNames,
+  getTokens,
   getWeapon,
   getWeaponNames,
   getWeapons,
   removeClass,
   removeMaterial,
   removeRace,
+  removeToken,
   removeWeapon as removeCatalogWeapon,
   updateMaterialBonuses,
   updateWeapon as updateCatalogWeapon,
   type MaterialEntry,
   type StatModifiers,
+  type TokenEntry,
 } from "./catalog";
 import {
   Character,
@@ -36,6 +42,12 @@ import {
   ARMOR_TYPE_OPTIONS,
   ArmorCurrentKey,
   ArmorSlotKey,
+  EXHAUSTION_TOKEN_NAME,
+  EXHAUSTION_TENSION_PENALTY,
+  HEAT_TOKEN_NAME,
+  COLD_TOKEN_NAME,
+  WORN_OUT_MAX_STACK,
+  WORN_OUT_TOKEN_NAME,
   LUCK_DIE_OPTIONS,
   NEGATIVE_TRAIT_OPTIONS,
   POINTS_PER_LEVEL,
@@ -43,14 +55,19 @@ import {
   STAT_KEYS,
   STAT_LABELS,
   StatKey,
+  TOKEN_SLOT_COUNT,
   WeaponItem,
+  applyWornOutRules,
   armorSlotsFromType,
   calculateAdj,
   calculateDodgeAdjust,
+  calculateTensionRounds,
   clampNumber,
   createBlankCharacter,
+  exhaustionTokenCount,
   maxUnusedPoints,
   parseCharacter,
+  reconcileHeatAndCold,
 } from "./character";
 
 const STORAGE_KEY = "durands-character-sheet-v3";
@@ -60,7 +77,7 @@ type AppPage = "sheet" | "catalog";
 let character: Character = loadInitial();
 let currentPage: AppPage = "sheet";
 let statusMessage = "Ready — adjust any value, then save when you like.";
-let catalogStatusMessage = "Browse races, classes, materials, and weapons, or add new ones.";
+let catalogStatusMessage = "Browse races, classes, materials, weapons, and tokens, or add new ones.";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("Missing #app root");
@@ -158,6 +175,14 @@ function selectedMaterialBonuses(): { armorBonus: number; dodgeBonus: number } {
     armorBonus: material?.armorBonus ?? 0,
     dodgeBonus: material?.dodgeBonus ?? 0,
   };
+}
+
+function currentTensionRounds(): number {
+  return calculateTensionRounds(
+    character.resilience,
+    character.level,
+    character.tokenSlots,
+  );
 }
 
 function currentDodgeAdjust(): number {
@@ -340,6 +365,7 @@ function updateNumber(
     syncNumberInput("level");
     syncNumberInput("unusedPoints");
     refreshUnusedPointsControls();
+    syncTensionRounds();
     return;
   }
 
@@ -485,11 +511,28 @@ function syncStatAdj(key: StatKey): void {
   ) {
     syncDodgeAdjust();
   }
+  if (key === "resilience") {
+    syncTensionRounds();
+  }
 }
 
 function syncDodgeAdjust(): void {
   const el = document.querySelector<HTMLInputElement>("[data-dodge-adjust]");
   if (el) el.value = formatAdj(currentDodgeAdjust());
+}
+
+function syncTensionRounds(): void {
+  const el = document.querySelector<HTMLInputElement>("[data-tension-rounds]");
+  if (el) el.value = String(currentTensionRounds());
+
+  const exhaustion = exhaustionTokenCount(character.tokenSlots);
+  const hint =
+    exhaustion > 0
+      ? `Includes −${exhaustion * EXHAUSTION_TENSION_PENALTY} from ${exhaustion} ${EXHAUSTION_TOKEN_NAME} token${exhaustion === 1 ? "" : "s"}.`
+      : `Res ADJ (⌊Res ÷ 3⌋, min 1 unless Res ≤ 0) + ⌊Level ÷ 5⌋; −${EXHAUSTION_TENSION_PENALTY} per ${EXHAUSTION_TOKEN_NAME} token.`;
+  const hintEl = document.querySelector<HTMLElement>("[data-tension-hint]");
+  if (hintEl) hintEl.textContent = hint;
+  if (el) el.title = hint;
 }
 
 function formatAdj(value: number): string {
@@ -584,6 +627,7 @@ function renderSheetPage(): void {
             ${selectField("className", "Class", character.className, getClassNames(), "Select a class…")}
             ${textField("height", "Height", character.height)}
             ${numberField("age", "Age", character.age, 0, 9999)}
+            ${tensionRoundField()}
             ${luckDieField()}
             ${unusedPointsField()}
             ${dodgeAdjustField()}
@@ -595,6 +639,8 @@ function renderSheetPage(): void {
             <div class="armor-material-panel">
               <h2 class="section-title">Armor Material</h2>
               ${armorMaterialField()}
+              <h2 class="section-title tokens-title">Tokens</h2>
+              ${tokenSlotsFields()}
             </div>
             <div class="armor-panel">
               <h2 class="section-title">Armor</h2>
@@ -778,7 +824,7 @@ function renderCatalogPage(): void {
       <header class="topbar">
         <div class="brand">
           <h1>Races &amp; Classes</h1>
-          <p>View and edit races, classes, armor materials, and weapon stat blocks.</p>
+          <p>View and edit races, classes, armor materials, weapons, and tokens.</p>
         </div>
         <div class="toolbar">
           ${renderNav("catalog")}
@@ -812,6 +858,13 @@ function renderCatalogPage(): void {
           <p class="catalog-empty">Weapon stat blocks appear in the character sheet Weapons dropdown.</p>
           ${weaponCatalogList(weapons)}
           ${weaponCatalogAddForm()}
+        </section>
+
+        <section>
+          <h2 class="section-title">Tokens</h2>
+          <p class="catalog-empty">Token names appear in the six Token dropdowns on the character sheet. Exhaustion reduces Tension Rounds by 2 per token. Heat and Cold cancel each other one-for-one. Worn Out stacks to 10, then grants Exhaustion.</p>
+          ${tokenCatalogList()}
+          ${tokenCatalogAddForm()}
         </section>
       </main>
     </div>
@@ -938,6 +991,188 @@ function materialAddForm(): string {
       <button class="btn" type="button" data-action="add-material">Add Material</button>
     </div>
   `;
+}
+
+function tokenCatalogList(): string {
+  const tokens = getTokens();
+  if (tokens.length === 0) {
+    return `<p class="catalog-empty">No tokens yet. Add one below.</p>`;
+  }
+
+  return `
+    <ul class="catalog-list">
+      ${tokens
+        .map(
+          (entry) => `
+        <li class="catalog-item">
+          <div class="catalog-item-main">
+            <div class="catalog-item-name">${escapeHtml(entry.name)}</div>
+            <div class="catalog-item-mods">${escapeHtml(tokenDescription(entry))}</div>
+          </div>
+          <button class="btn danger catalog-remove" type="button" data-remove-token="${escapeAttr(entry.name)}">Remove</button>
+        </li>
+      `,
+        )
+        .join("")}
+    </ul>
+  `;
+}
+
+function tokenDescription(entry: TokenEntry): string {
+  return entry.description.trim() || "No special rules set";
+}
+
+function tokenCatalogAddForm(): string {
+  return `
+    <div class="catalog-add">
+      <h3 class="catalog-add-title">Add token</h3>
+      <div class="field">
+        <label for="tokenName">Name</label>
+        <input id="tokenName" type="text" data-token-name-new autocomplete="off" placeholder="Token name" />
+      </div>
+      <div class="field">
+        <label for="tokenDescription">Description</label>
+        <input id="tokenDescription" type="text" data-token-description-new autocomplete="off" placeholder="Optional rules text…" />
+      </div>
+      <button class="btn" type="button" data-action="add-token">Add Token</button>
+    </div>
+  `;
+}
+
+function submitTokenEntry(): void {
+  const nameInput = document.querySelector<HTMLInputElement>("[data-token-name-new]");
+  const descriptionInput = document.querySelector<HTMLInputElement>(
+    "[data-token-description-new]",
+  );
+  const name = nameInput?.value ?? "";
+  const error = addToken(name, descriptionInput?.value ?? "");
+  if (error) {
+    setCatalogStatus(error);
+    return;
+  }
+  setCatalogStatus(`Added token “${name.trim()}”.`);
+  render();
+}
+
+function setTokenSlotName(index: number, name: string): void {
+  if (index < 0 || index >= TOKEN_SLOT_COUNT) return;
+  const nextName = name.trim();
+  const pending = character.tokenSlots.map((slot, i) =>
+    i === index ? { ...slot, name: nextName } : slot,
+  );
+  commitTokenSlots(pending, nextName ? getToken(nextName) : null, index);
+}
+
+function setTokenSlotCount(index: number, count: number): void {
+  if (index < 0 || index >= TOKEN_SLOT_COUNT) return;
+  const slot = character.tokenSlots[index];
+  const isWornOut =
+    (slot?.name ?? "").trim().toLowerCase() ===
+    WORN_OUT_TOKEN_NAME.toLowerCase();
+  const nextCount = clampNumber(
+    count,
+    0,
+    isWornOut ? WORN_OUT_MAX_STACK : 9999,
+  );
+  const pending = character.tokenSlots.map((entry, i) =>
+    i === index ? { ...entry, count: nextCount } : entry,
+  );
+  commitTokenSlots(pending, null, index);
+}
+
+function commitTokenSlots(
+  pending: { name: string; count: number }[],
+  selectedToken: { name: string; description: string } | null,
+  index: number,
+): void {
+  const worn = applyWornOutRules(character.tokenSlots, pending);
+  const cancelled = heatColdCancelAmount(worn.slots);
+  character = {
+    ...character,
+    tokenSlots: reconcileHeatAndCold(worn.slots),
+  };
+  persist();
+  syncTokenSlotInputs();
+  syncTensionRounds();
+
+  if (worn.gainedExhaustion) {
+    setStatus(
+      `${WORN_OUT_TOKEN_NAME} reached ${WORN_OUT_MAX_STACK} — gained 1 ${EXHAUSTION_TOKEN_NAME} and Worn Out reset to 0.`,
+    );
+    return;
+  }
+  if (worn.capped) {
+    setStatus(`${WORN_OUT_TOKEN_NAME} can only stack up to ${WORN_OUT_MAX_STACK}.`);
+    return;
+  }
+  if (cancelled > 0) {
+    setStatus(
+      `Heat and Cold cancelled ${cancelled} token${cancelled === 1 ? "" : "s"}.`,
+    );
+    return;
+  }
+  if (selectedToken?.description) {
+    setStatus(`${selectedToken.name}: ${selectedToken.description}`);
+    return;
+  }
+  const slot = character.tokenSlots[index];
+  if (!slot?.name) {
+    setStatus(`Token ${index + 1} cleared.`);
+    return;
+  }
+  setStatus(`Token ${index + 1} set to ${slot.name} ×${slot.count}.`);
+}
+
+function heatColdCancelAmount(
+  slots: { name: string; count: number }[],
+): number {
+  const heat = slots
+    .filter((s) => s.name.toLowerCase() === HEAT_TOKEN_NAME.toLowerCase())
+    .reduce((n, s) => n + Math.max(0, s.count), 0);
+  const cold = slots
+    .filter((s) => s.name.toLowerCase() === COLD_TOKEN_NAME.toLowerCase())
+    .reduce((n, s) => n + Math.max(0, s.count), 0);
+  return Math.min(heat, cold);
+}
+
+function syncTokenSlotInputs(): void {
+  character.tokenSlots.forEach((slot, index) => {
+    const select = document.querySelector<HTMLSelectElement>(
+      `[data-token-slot="${index}"]`,
+    );
+    if (select && select.value !== slot.name) {
+      select.value = slot.name;
+    }
+    const input = document.querySelector<HTMLInputElement>(
+      `[data-token-count="${index}"]`,
+    );
+    if (input) {
+      const max =
+        slot.name.trim().toLowerCase() === WORN_OUT_TOKEN_NAME.toLowerCase()
+          ? WORN_OUT_MAX_STACK
+          : 9999;
+      input.value = String(slot.count);
+      input.max = String(max);
+    }
+  });
+}
+
+function adjustTokenSlotCount(index: number, delta: number): void {
+  const slot = character.tokenSlots[index];
+  if (!slot) return;
+  setTokenSlotCount(index, slot.count + delta);
+}
+
+function clearTokenSlotsNamed(name: string): void {
+  let changed = false;
+  const next = character.tokenSlots.map((slot) => {
+    if (slot.name !== name) return slot;
+    changed = true;
+    return { ...slot, name: "" };
+  });
+  if (!changed) return;
+  character = { ...character, tokenSlots: next };
+  persist();
 }
 
 function weaponCatalogList(weapons: WeaponItem[]): string {
@@ -1233,6 +1468,21 @@ function unusedPointsField(): string {
   `;
 }
 
+function tensionRoundField(): string {
+  const exhaustion = exhaustionTokenCount(character.tokenSlots);
+  const hint =
+    exhaustion > 0
+      ? `Includes −${exhaustion * EXHAUSTION_TENSION_PENALTY} from ${exhaustion} ${EXHAUSTION_TOKEN_NAME} token${exhaustion === 1 ? "" : "s"}.`
+      : `Res ADJ (⌊Res ÷ 3⌋, min 1 unless Res ≤ 0) + ⌊Level ÷ 5⌋; −${EXHAUSTION_TENSION_PENALTY} per ${EXHAUSTION_TOKEN_NAME} token.`;
+  return `
+    <div class="field">
+      <label for="tensionRounds">Tension Round</label>
+      <input id="tensionRounds" class="tension-rounds-input" type="number" data-tension-rounds value="${currentTensionRounds()}" readonly tabindex="-1" aria-readonly="true" title="${escapeAttr(hint)}" />
+      <p class="armor-material-hint" data-tension-hint>${escapeHtml(hint)}</p>
+    </div>
+  `;
+}
+
 function dodgeAdjustField(): string {
   return `
     <div class="field">
@@ -1306,6 +1556,56 @@ function weaponCatalogSelect(): string {
         <option value="" selected>${weapons.length ? "Select weapon…" : "No weapons in catalog yet"}</option>
         ${options}
       </select>
+    </div>
+  `;
+}
+
+function tokenSlotsFields(): string {
+  const tokens = getTokenNames();
+  return `
+    <div class="token-slots">
+      ${Array.from({ length: TOKEN_SLOT_COUNT }, (_, index) => tokenSlotField(index, tokens)).join("")}
+    </div>
+    <p class="armor-material-hint">Add token types on Races &amp; Classes, then assign them here with a count.</p>
+  `;
+}
+
+function tokenSlotField(index: number, tokens: string[]): string {
+  const slot = character.tokenSlots[index] ?? { name: "", count: 0 };
+  const choices = [...tokens];
+  if (
+    slot.name &&
+    !choices.some((name) => name.toLowerCase() === slot.name.toLowerCase())
+  ) {
+    choices.unshift(slot.name);
+  }
+
+  const options = choices
+    .map(
+      (name) =>
+        `<option value="${escapeAttr(name)}"${slot.name === name ? " selected" : ""}>${escapeHtml(name)}</option>`,
+    )
+    .join("");
+
+  const label = `Token ${index + 1}`;
+  const max =
+    slot.name.trim().toLowerCase() === WORN_OUT_TOKEN_NAME.toLowerCase()
+      ? WORN_OUT_MAX_STACK
+      : 9999;
+  return `
+    <div class="token-slot-row">
+      <div class="field token-slot-select">
+        <label for="tokenSlot${index}">${label}</label>
+        <select id="tokenSlot${index}" data-token-slot="${index}">
+          <option value=""${slot.name ? "" : " selected"}>Select token…</option>
+          ${options}
+        </select>
+      </div>
+      <div class="token-slot-count" aria-label="${label} count">
+        <button class="stepper" type="button" data-token-adjust="${index}" data-delta="-1" aria-label="Decrease ${label}">−</button>
+        <input type="number" class="token-count-input" data-token-count="${index}" value="${slot.count}" min="0" max="${max}" aria-label="${label} amount" />
+        <button class="stepper" type="button" data-token-adjust="${index}" data-delta="1" aria-label="Increase ${label}">+</button>
+      </div>
     </div>
   `;
 }
@@ -1842,6 +2142,32 @@ function bindSheetEvents(): void {
     });
   });
 
+  document.querySelectorAll<HTMLSelectElement>("[data-token-slot]").forEach((select) => {
+    select.addEventListener("change", () => {
+      setTokenSlotName(Number(select.dataset.tokenSlot ?? -1), select.value);
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-token-adjust]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      adjustTokenSlotCount(
+        Number(btn.dataset.tokenAdjust ?? -1),
+        Number(btn.dataset.delta ?? 0),
+      );
+    });
+  });
+
+  document.querySelectorAll<HTMLInputElement>("[data-token-count]").forEach((input) => {
+    const commit = () => {
+      setTokenSlotCount(
+        Number(input.dataset.tokenCount ?? -1),
+        Number(input.value),
+      );
+    };
+    input.addEventListener("change", commit);
+    input.addEventListener("blur", commit);
+  });
+
   document.querySelectorAll<HTMLButtonElement>("[data-remove-inventory]").forEach((btn) => {
     btn.addEventListener("click", () => {
       removeInventoryItem(btn.dataset.removeInventory ?? "");
@@ -1961,6 +2287,7 @@ function bindCatalogEvents(): void {
       if (action === "save-material") {
         saveMaterialEntry(btn.dataset.materialName ?? "");
       }
+      if (action === "add-token") submitTokenEntry();
       if (action === "add-catalog-weapon") submitCatalogWeaponEntry();
       if (action === "save-weapon") {
         saveCatalogWeaponEntry(btn.dataset.weaponName ?? "");
@@ -2012,6 +2339,20 @@ function bindCatalogEvents(): void {
           applyArmorValues(character.armorType);
         }
         setCatalogStatus(`Removed material “${name}”.`);
+        render();
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-remove-token]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const name = btn.dataset.removeToken ?? "";
+      if (!name) return;
+      const ok = window.confirm(`Remove token “${name}”?`);
+      if (!ok) return;
+      if (removeToken(name)) {
+        clearTokenSlotsNamed(name);
+        setCatalogStatus(`Removed token “${name}”.`);
         render();
       }
     });

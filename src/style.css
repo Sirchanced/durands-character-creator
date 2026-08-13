@@ -205,6 +205,55 @@ body {
   line-height: 1.35;
 }
 
+.tokens-title {
+  margin-top: 0.35rem;
+}
+
+.token-slots {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.token-slot-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: end;
+}
+
+.token-slot-select {
+  min-width: 0;
+}
+
+.token-slot-count {
+  display: grid;
+  grid-template-columns: 2.2rem 3.2rem 2.2rem;
+  gap: 0.3rem;
+  align-items: stretch;
+}
+
+.token-count-input {
+  width: 100%;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--line);
+  background: var(--input-bg);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 0.4rem 0.25rem;
+  font: 600 0.95rem var(--font-body);
+}
+
+@media (max-width: 560px) {
+  .token-slot-row {
+    grid-template-columns: 1fr;
+  }
+
+  .token-slot-count {
+    justify-self: start;
+  }
+}
+
 .armor-type-field,
 .armor-type-field select {
   width: 100%;
@@ -409,6 +458,19 @@ body {
 }
 
 .unused-points-input:focus {
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.tension-rounds-input {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.05rem;
+  cursor: default;
+  opacity: 0.92;
+}
+
+.tension-rounds-input:focus {
   border-color: var(--line);
   box-shadow: none;
 }
