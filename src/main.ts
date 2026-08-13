@@ -3,16 +3,28 @@ import {
   addClass,
   addMaterial,
   addRace,
+  addWeapon as addCatalogWeapon,
+  formatMaterialBonuses,
   formatModifiers,
+  formatWeaponStats,
   getCatalog,
   getClassModifiers,
   getClassNames,
+  getMaterial,
   getMaterialNames,
+  getMaterials,
   getRaceModifiers,
   getRaceNames,
+  getWeapon,
+  getWeaponNames,
+  getWeapons,
   removeClass,
   removeMaterial,
   removeRace,
+  removeWeapon as removeCatalogWeapon,
+  updateMaterialBonuses,
+  updateWeapon as updateCatalogWeapon,
+  type MaterialEntry,
   type StatModifiers,
 } from "./catalog";
 import {
@@ -31,6 +43,7 @@ import {
   STAT_KEYS,
   STAT_LABELS,
   StatKey,
+  WeaponItem,
   armorSlotsFromType,
   calculateAdj,
   calculateDodgeAdjust,
@@ -47,7 +60,7 @@ type AppPage = "sheet" | "catalog";
 let character: Character = loadInitial();
 let currentPage: AppPage = "sheet";
 let statusMessage = "Ready — adjust any value, then save when you like.";
-let catalogStatusMessage = "Browse race and class adjustments, or add new ones.";
+let catalogStatusMessage = "Browse races, classes, materials, and weapons, or add new ones.";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("Missing #app root");
@@ -131,47 +144,78 @@ function updateText(
     applyArmorTypeChange(value);
     return;
   }
+  if (key === "armorMaterial") {
+    applyArmorMaterialChange(value);
+    return;
+  }
   character = { ...character, [key]: value };
   persist();
 }
 
-function applyArmorTypeChange(nextType: string): void {
-  if (nextType === character.armorType) return;
+function selectedMaterialBonuses(): { armorBonus: number; dodgeBonus: number } {
+  const material = getMaterial(character.armorMaterial);
+  return {
+    armorBonus: material?.armorBonus ?? 0,
+    dodgeBonus: material?.dodgeBonus ?? 0,
+  };
+}
 
-  const slots = armorSlotsFromType(nextType, character.maxHealth);
+function currentDodgeAdjust(): number {
+  return calculateDodgeAdjust(character, selectedMaterialBonuses().dodgeBonus);
+}
+
+function applyArmorValues(armorType = character.armorType): void {
+  const { armorBonus } = selectedMaterialBonuses();
+  const slots = armorSlotsFromType(
+    armorType,
+    character.maxHealth,
+    armorBonus,
+  );
   character = {
     ...character,
-    armorType: nextType,
+    armorType,
     ...slots,
   };
   persist();
   syncArmorSlotInputs();
   syncDodgeAdjust();
+}
 
-  if (nextType === "Light") {
+function applyArmorTypeChange(nextType: string): void {
+  if (nextType === character.armorType) return;
+  applyArmorValues(nextType);
+
+  const base = armorSlotsFromType(nextType, character.maxHealth, 0).armorHead;
+  const { armorBonus, dodgeBonus } = selectedMaterialBonuses();
+  const typeDodge =
+    nextType === "Light" ? 2 : nextType === "Medium" ? 1 : nextType === "Heavy" ? -1 : 0;
+
+  if (nextType === "Light" || nextType === "Medium" || nextType === "Heavy") {
     setStatus(
-      `Light armor: slots set to ${slots.armorHead} (⅓ Max Health), Dodge Adjust +2.`,
-    );
-  } else if (nextType === "Medium") {
-    setStatus(
-      `Medium armor: slots set to ${slots.armorHead} (⅔ Max Health), Dodge Adjust +1.`,
-    );
-  } else if (nextType === "Heavy") {
-    setStatus(
-      `Heavy armor: slots set to ${slots.armorHead} (full Max Health), Dodge Adjust −1.`,
+      `${nextType} armor: base ${base} + material armor ${armorBonus >= 0 ? "+" : ""}${armorBonus}; dodge type ${typeDodge >= 0 ? "+" : ""}${typeDodge}, material ${dodgeBonus >= 0 ? "+" : ""}${dodgeBonus}.`,
     );
   } else {
     setStatus("Armor type cleared.");
   }
 }
 
+function applyArmorMaterialChange(nextMaterial: string): void {
+  if (nextMaterial === character.armorMaterial) return;
+  character = { ...character, armorMaterial: nextMaterial };
+  applyArmorValues(character.armorType);
+  const material = getMaterial(nextMaterial);
+  if (material) {
+    setStatus(
+      `${material.name} selected (${formatMaterialBonuses(material)}), applied additively after base.`,
+    );
+  } else {
+    setStatus("Armor material cleared.");
+  }
+}
+
 function syncArmorFromMaxHealth(): void {
-  if (!character.armorType) return;
-  const slots = armorSlotsFromType(character.armorType, character.maxHealth);
-  character = { ...character, ...slots };
-  persist();
-  syncArmorSlotInputs();
-  syncDodgeAdjust();
+  if (!character.armorType && !character.armorMaterial) return;
+  applyArmorValues(character.armorType);
 }
 
 function syncArmorSlotInputs(): void {
@@ -445,7 +489,7 @@ function syncStatAdj(key: StatKey): void {
 
 function syncDodgeAdjust(): void {
   const el = document.querySelector<HTMLInputElement>("[data-dodge-adjust]");
-  if (el) el.value = formatAdj(calculateDodgeAdjust(character));
+  if (el) el.value = formatAdj(currentDodgeAdjust());
 }
 
 function formatAdj(value: number): string {
@@ -650,6 +694,47 @@ function renderSheetPage(): void {
           </div>
         </section>
 
+        <section class="weapons-section">
+          <h2 class="section-title">Weapons</h2>
+          <div class="weapons-add">
+            ${weaponCatalogSelect()}
+            <div class="field">
+              <label for="weaponDamage">Damage</label>
+              <input id="weaponDamage" type="text" data-weapon-field="damage" placeholder="e.g. 2d6" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="weaponMagazine">Magazine size</label>
+              <input id="weaponMagazine" type="text" data-weapon-field="magazineSize" placeholder="e.g. 30" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="weaponRoF">Rate of fire</label>
+              <input id="weaponRoF" type="text" data-weapon-field="rateOfFire" placeholder="e.g. Semi / Auto" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="weaponConsecutive">Consecutive Shot Inaccuracy</label>
+              <input id="weaponConsecutive" type="text" data-weapon-field="consecutiveShot" placeholder="e.g. −1 / shot" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="weaponMalf">Malfunction chance</label>
+              <input id="weaponMalf" type="text" data-weapon-field="malfunctionChance" placeholder="e.g. 5%" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="weaponStatReq">Stat requirement</label>
+              <input id="weaponStatReq" type="text" data-weapon-field="statRequirement" placeholder="e.g. Dex 4" autocomplete="off" />
+            </div>
+            <div class="field weapons-ability-field">
+              <label for="weaponAbility">Special ability</label>
+              <input id="weaponAbility" type="text" data-weapon-field="specialAbility" placeholder="Special ability…" autocomplete="off" />
+            </div>
+            <button class="btn weapons-add-btn" type="button" data-action="add-weapon">Add weapon</button>
+          </div>
+          <p class="weapons-hint">Create weapon stat blocks on Races &amp; Classes, then select one here to add it to this character.</p>
+          <div class="taken-traits" aria-live="polite">
+            <div class="taken-traits-label">Weapons carried</div>
+            ${weaponsBox()}
+          </div>
+        </section>
+
         <section class="inventory-section">
           <h2 class="section-title">Inventory</h2>
           <div class="inventory-add">
@@ -684,14 +769,16 @@ function renderSheetPage(): void {
 }
 
 function renderCatalogPage(): void {
-  const { races, classes, materials } = getCatalog();
+  const { races, classes } = getCatalog();
+  const materials = getMaterials();
+  const weapons = getWeapons();
 
   app!.innerHTML = `
     <div class="app-shell">
       <header class="topbar">
         <div class="brand">
           <h1>Races &amp; Classes</h1>
-          <p>View stat adjustments and add new races, classes, or materials.</p>
+          <p>View and edit races, classes, armor materials, and weapon stat blocks.</p>
         </div>
         <div class="toolbar">
           ${renderNav("catalog")}
@@ -715,8 +802,16 @@ function renderCatalogPage(): void {
 
         <section>
           <h2 class="section-title">Armor Materials</h2>
+          <p class="catalog-empty">Armor protection and dodge bonuses are added after the armor-type base calculation.</p>
           ${materialList(materials)}
           ${materialAddForm()}
+        </section>
+
+        <section>
+          <h2 class="section-title">Weapons</h2>
+          <p class="catalog-empty">Weapon stat blocks appear in the character sheet Weapons dropdown.</p>
+          ${weaponCatalogList(weapons)}
+          ${weaponCatalogAddForm()}
         </section>
       </main>
     </div>
@@ -788,7 +883,7 @@ function readModifierInputs(kind: "race" | "class"): StatModifiers {
   return modifiers;
 }
 
-function materialList(materials: string[]): string {
+function materialList(materials: MaterialEntry[]): string {
   if (materials.length === 0) {
     return `<p class="catalog-empty">No armor materials yet. Add one below.</p>`;
   }
@@ -797,12 +892,23 @@ function materialList(materials: string[]): string {
     <ul class="catalog-list">
       ${materials
         .map(
-          (name) => `
-        <li class="catalog-item">
+          (entry) => `
+        <li class="catalog-item material-item">
           <div class="catalog-item-main">
-            <div class="catalog-item-name">${escapeHtml(name)}</div>
+            <div class="catalog-item-name">${escapeHtml(entry.name)}</div>
+            <div class="material-bonus-row">
+              <div class="field">
+                <label for="mat-armor-${escapeAttr(entry.name)}">Armor protection</label>
+                <input id="mat-armor-${escapeAttr(entry.name)}" type="number" data-material-armor="${escapeAttr(entry.name)}" value="${entry.armorBonus}" />
+              </div>
+              <div class="field">
+                <label for="mat-dodge-${escapeAttr(entry.name)}">Dodge adjust</label>
+                <input id="mat-dodge-${escapeAttr(entry.name)}" type="number" data-material-dodge="${escapeAttr(entry.name)}" value="${entry.dodgeBonus}" />
+              </div>
+              <button class="btn" type="button" data-action="save-material" data-material-name="${escapeAttr(entry.name)}">Save</button>
+            </div>
           </div>
-          <button class="btn danger catalog-remove" type="button" data-remove-material="${escapeAttr(name)}">Remove</button>
+          <button class="btn danger catalog-remove" type="button" data-remove-material="${escapeAttr(entry.name)}">Remove</button>
         </li>
       `,
         )
@@ -817,22 +923,219 @@ function materialAddForm(): string {
       <h3 class="catalog-add-title">Add material</h3>
       <div class="field">
         <label for="materialName">Name</label>
-        <input id="materialName" type="text" data-material-name autocomplete="off" placeholder="Material name" />
+        <input id="materialName" type="text" data-material-name-new autocomplete="off" placeholder="Material name" />
+      </div>
+      <div class="catalog-mod-grid">
+        <div class="field">
+          <label for="materialArmorBonus">Armor protection</label>
+          <input id="materialArmorBonus" type="number" data-material-armor-new value="0" />
+        </div>
+        <div class="field">
+          <label for="materialDodgeBonus">Dodge adjust</label>
+          <input id="materialDodgeBonus" type="number" data-material-dodge-new value="0" />
+        </div>
       </div>
       <button class="btn" type="button" data-action="add-material">Add Material</button>
     </div>
   `;
 }
 
+function weaponCatalogList(weapons: WeaponItem[]): string {
+  if (weapons.length === 0) {
+    return `<p class="catalog-empty">No weapon stat blocks yet. Add one below.</p>`;
+  }
+
+  return `
+    <ul class="catalog-list">
+      ${weapons
+        .map(
+          (entry) => `
+        <li class="catalog-item weapon-catalog-item">
+          <div class="catalog-item-main">
+            <div class="catalog-item-name">${escapeHtml(entry.name)}</div>
+            <div class="weapon-catalog-fields">
+              ${weaponCatalogField(entry.name, "damage", "Damage", entry.damage)}
+              ${weaponCatalogField(entry.name, "magazineSize", "Magazine size", entry.magazineSize)}
+              ${weaponCatalogField(entry.name, "rateOfFire", "Rate of fire", entry.rateOfFire)}
+              ${weaponCatalogField(entry.name, "consecutiveShot", "Consecutive Shot Inaccuracy", entry.consecutiveShot)}
+              ${weaponCatalogField(entry.name, "malfunctionChance", "Malfunction chance", entry.malfunctionChance)}
+              ${weaponCatalogField(entry.name, "statRequirement", "Stat requirement", entry.statRequirement)}
+              ${weaponCatalogField(entry.name, "specialAbility", "Special ability", entry.specialAbility, true)}
+              <button class="btn" type="button" data-action="save-weapon" data-weapon-name="${escapeAttr(entry.name)}">Save</button>
+            </div>
+          </div>
+          <button class="btn danger catalog-remove" type="button" data-remove-weapon-catalog="${escapeAttr(entry.name)}">Remove</button>
+        </li>
+      `,
+        )
+        .join("")}
+    </ul>
+  `;
+}
+
+function weaponCatalogField(
+  weaponName: string,
+  field: keyof Omit<WeaponItem, "name">,
+  label: string,
+  value: string,
+  wide = false,
+): string {
+  const id = `cat-weapon-${field}-${weaponName}`;
+  return `
+    <div class="field${wide ? " weapon-catalog-wide" : ""}">
+      <label for="${escapeAttr(id)}">${escapeHtml(label)}</label>
+      <input id="${escapeAttr(id)}" type="text" data-weapon-catalog-edit="${escapeAttr(weaponName)}" data-weapon-catalog-field="${field}" value="${escapeAttr(value)}" autocomplete="off" />
+    </div>
+  `;
+}
+
+function weaponCatalogAddForm(): string {
+  return `
+    <div class="catalog-add">
+      <h3 class="catalog-add-title">Add weapon</h3>
+      <div class="weapon-catalog-fields">
+        <div class="field weapon-catalog-wide">
+          <label for="catalogWeaponName">Name</label>
+          <input id="catalogWeaponName" type="text" data-weapon-catalog-new="name" autocomplete="off" placeholder="Weapon name" />
+        </div>
+        <div class="field">
+          <label for="catalogWeaponDamage">Damage</label>
+          <input id="catalogWeaponDamage" type="text" data-weapon-catalog-new="damage" autocomplete="off" placeholder="e.g. 2d6" />
+        </div>
+        <div class="field">
+          <label for="catalogWeaponMagazine">Magazine size</label>
+          <input id="catalogWeaponMagazine" type="text" data-weapon-catalog-new="magazineSize" autocomplete="off" placeholder="e.g. 30" />
+        </div>
+        <div class="field">
+          <label for="catalogWeaponRoF">Rate of fire</label>
+          <input id="catalogWeaponRoF" type="text" data-weapon-catalog-new="rateOfFire" autocomplete="off" placeholder="e.g. Semi / Auto" />
+        </div>
+        <div class="field">
+          <label for="catalogWeaponConsecutive">Consecutive Shot Inaccuracy</label>
+          <input id="catalogWeaponConsecutive" type="text" data-weapon-catalog-new="consecutiveShot" autocomplete="off" placeholder="e.g. −1 / shot" />
+        </div>
+        <div class="field">
+          <label for="catalogWeaponMalf">Malfunction chance</label>
+          <input id="catalogWeaponMalf" type="text" data-weapon-catalog-new="malfunctionChance" autocomplete="off" placeholder="e.g. 5%" />
+        </div>
+        <div class="field">
+          <label for="catalogWeaponStatReq">Stat requirement</label>
+          <input id="catalogWeaponStatReq" type="text" data-weapon-catalog-new="statRequirement" autocomplete="off" placeholder="e.g. Dex 4" />
+        </div>
+        <div class="field weapon-catalog-wide">
+          <label for="catalogWeaponAbility">Special ability</label>
+          <input id="catalogWeaponAbility" type="text" data-weapon-catalog-new="specialAbility" autocomplete="off" placeholder="Special ability…" />
+        </div>
+      </div>
+      <button class="btn" type="button" data-action="add-catalog-weapon">Add Weapon</button>
+    </div>
+  `;
+}
+
+function readCatalogWeaponNew(): WeaponItem {
+  const value = (field: string) =>
+    document.querySelector<HTMLInputElement>(
+      `[data-weapon-catalog-new="${field}"]`,
+    )?.value.trim() ?? "";
+
+  return {
+    name: value("name"),
+    damage: value("damage"),
+    magazineSize: value("magazineSize"),
+    rateOfFire: value("rateOfFire"),
+    consecutiveShot: value("consecutiveShot"),
+    malfunctionChance: value("malfunctionChance"),
+    statRequirement: value("statRequirement"),
+    specialAbility: value("specialAbility"),
+  };
+}
+
+function readCatalogWeaponEdit(name: string): WeaponItem {
+  const value = (field: string) =>
+    document.querySelector<HTMLInputElement>(
+      `[data-weapon-catalog-edit="${CSS.escape(name)}"][data-weapon-catalog-field="${field}"]`,
+    )?.value.trim() ?? "";
+
+  return {
+    name,
+    damage: value("damage"),
+    magazineSize: value("magazineSize"),
+    rateOfFire: value("rateOfFire"),
+    consecutiveShot: value("consecutiveShot"),
+    malfunctionChance: value("malfunctionChance"),
+    statRequirement: value("statRequirement"),
+    specialAbility: value("specialAbility"),
+  };
+}
+
+function submitCatalogWeaponEntry(): void {
+  const weapon = readCatalogWeaponNew();
+  const error = addCatalogWeapon(weapon);
+  if (error) {
+    setCatalogStatus(error);
+    return;
+  }
+  setCatalogStatus(
+    `Added weapon “${weapon.name}” (${formatWeaponStats(weapon)}).`,
+  );
+  render();
+}
+
+function saveCatalogWeaponEntry(name: string): void {
+  if (!name) return;
+  const weapon = readCatalogWeaponEdit(name);
+  const ok = updateCatalogWeapon(name, weapon);
+  if (!ok) {
+    setCatalogStatus(`Could not update ${name}.`);
+    return;
+  }
+  setCatalogStatus(`Updated ${name}: ${formatWeaponStats(weapon)}.`);
+  render();
+}
+
 function submitMaterialEntry(): void {
-  const nameInput = document.querySelector<HTMLInputElement>("[data-material-name]");
+  const nameInput = document.querySelector<HTMLInputElement>("[data-material-name-new]");
+  const armorInput = document.querySelector<HTMLInputElement>("[data-material-armor-new]");
+  const dodgeInput = document.querySelector<HTMLInputElement>("[data-material-dodge-new]");
   const name = nameInput?.value ?? "";
-  const error = addMaterial(name);
+  const error = addMaterial(
+    name,
+    Number(armorInput?.value ?? 0),
+    Number(dodgeInput?.value ?? 0),
+  );
   if (error) {
     setCatalogStatus(error);
     return;
   }
   setCatalogStatus(`Added material “${name.trim()}”.`);
+  render();
+}
+
+function saveMaterialEntry(name: string): void {
+  const armorInput = document.querySelector<HTMLInputElement>(
+    `[data-material-armor="${CSS.escape(name)}"]`,
+  );
+  const dodgeInput = document.querySelector<HTMLInputElement>(
+    `[data-material-dodge="${CSS.escape(name)}"]`,
+  );
+  const ok = updateMaterialBonuses(
+    name,
+    Number(armorInput?.value ?? 0),
+    Number(dodgeInput?.value ?? 0),
+  );
+  if (!ok) {
+    setCatalogStatus(`Could not update ${name}.`);
+    return;
+  }
+  if (character.armorMaterial === name) {
+    applyArmorValues(character.armorType);
+  }
+  const material = getMaterial(name);
+  setCatalogStatus(
+    material
+      ? `Updated ${name}: ${formatMaterialBonuses(material)}.`
+      : `Updated ${name}.`,
+  );
   render();
 }
 
@@ -934,7 +1237,7 @@ function dodgeAdjustField(): string {
   return `
     <div class="field">
       <label for="dodgeAdjust">Dodge Adjust</label>
-      <input id="dodgeAdjust" class="dodge-adjust-input" type="text" data-dodge-adjust value="${escapeAttr(formatAdj(calculateDodgeAdjust(character)))}" readonly tabindex="-1" aria-readonly="true" />
+      <input id="dodgeAdjust" class="dodge-adjust-input" type="text" data-dodge-adjust value="${escapeAttr(formatAdj(currentDodgeAdjust()))}" readonly tabindex="-1" aria-readonly="true" />
     </div>
   `;
 }
@@ -982,7 +1285,27 @@ function armorMaterialField(): string {
         <option value=""${character.armorMaterial ? "" : " selected"}>Select material…</option>
         ${options}
       </select>
-      <p class="armor-material-hint">Add materials on the Races &amp; Classes page.</p>
+      <p class="armor-material-hint">Bonuses apply after armor-type base. Edit material values on Races &amp; Classes.</p>
+    </div>
+  `;
+}
+
+function weaponCatalogSelect(): string {
+  const weapons = getWeaponNames();
+  const options = weapons
+    .map(
+      (name) =>
+        `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`,
+    )
+    .join("");
+
+  return `
+    <div class="field weapons-name-field">
+      <label for="weaponName">Weapon name</label>
+      <select id="weaponName" data-weapon-select>
+        <option value="" selected>${weapons.length ? "Select weapon…" : "No weapons in catalog yet"}</option>
+        ${options}
+      </select>
     </div>
   `;
 }
@@ -1240,6 +1563,112 @@ function removeSkill(kind: SkillKind, skill: string): void {
   render();
 }
 
+function weaponsBox(): string {
+  if (character.weapons.length === 0) {
+    return `<p class="taken-traits-empty">No weapons yet.</p>`;
+  }
+
+  return `
+    <ul class="taken-traits-list weapons-list">
+      ${character.weapons
+        .map(
+          (weapon) => `
+        <li class="taken-trait weapon-item">
+          <div class="weapon-item-header">
+            <span class="weapon-item-name">${escapeHtml(weapon.name)}</span>
+            <button class="trait-remove" type="button" data-remove-weapon="${escapeAttr(weapon.name)}" aria-label="Remove ${escapeAttr(weapon.name)}">Remove</button>
+          </div>
+          <dl class="weapon-stats">
+            <div><dt>Damage</dt><dd>${escapeHtml(weapon.damage || "—")}</dd></div>
+            <div><dt>Magazine size</dt><dd>${escapeHtml(weapon.magazineSize || "—")}</dd></div>
+            <div><dt>Rate of fire</dt><dd>${escapeHtml(weapon.rateOfFire || "—")}</dd></div>
+            <div><dt>Consecutive Shot Inaccuracy</dt><dd>${escapeHtml(weapon.consecutiveShot || "—")}</dd></div>
+            <div><dt>Malfunction chance</dt><dd>${escapeHtml(weapon.malfunctionChance || "—")}</dd></div>
+            <div><dt>Stat requirement</dt><dd>${escapeHtml(weapon.statRequirement || "—")}</dd></div>
+            <div class="weapon-ability"><dt>Special ability</dt><dd>${escapeHtml(weapon.specialAbility || "—")}</dd></div>
+          </dl>
+        </li>
+      `,
+        )
+        .join("")}
+    </ul>
+  `;
+}
+
+function readWeaponForm(): WeaponItem {
+  const select = document.querySelector<HTMLSelectElement>("[data-weapon-select]");
+  const value = (field: string) =>
+    document.querySelector<HTMLInputElement>(`[data-weapon-field="${field}"]`)?.value.trim() ?? "";
+
+  return {
+    name: select?.value.trim() ?? "",
+    damage: value("damage"),
+    magazineSize: value("magazineSize"),
+    rateOfFire: value("rateOfFire"),
+    consecutiveShot: value("consecutiveShot"),
+    malfunctionChance: value("malfunctionChance"),
+    statRequirement: value("statRequirement"),
+    specialAbility: value("specialAbility"),
+  };
+}
+
+function applyWeaponCatalogSelection(name: string): void {
+  const weapon = name ? getWeapon(name) : null;
+  const setField = (field: keyof Omit<WeaponItem, "name">, next: string) => {
+    const input = document.querySelector<HTMLInputElement>(
+      `[data-weapon-field="${field}"]`,
+    );
+    if (input) input.value = next;
+  };
+
+  setField("damage", weapon?.damage ?? "");
+  setField("magazineSize", weapon?.magazineSize ?? "");
+  setField("rateOfFire", weapon?.rateOfFire ?? "");
+  setField("consecutiveShot", weapon?.consecutiveShot ?? "");
+  setField("malfunctionChance", weapon?.malfunctionChance ?? "");
+  setField("statRequirement", weapon?.statRequirement ?? "");
+  setField("specialAbility", weapon?.specialAbility ?? "");
+
+  if (weapon) {
+    setStatus(`Loaded weapon block: ${weapon.name}.`);
+  }
+}
+
+function addWeapon(): void {
+  const weapon = readWeaponForm();
+  if (!weapon.name) {
+    setStatus("Select a weapon from the catalog first.");
+    return;
+  }
+
+  if (
+    character.weapons.some(
+      (entry) => entry.name.toLowerCase() === weapon.name.toLowerCase(),
+    )
+  ) {
+    setStatus(`Weapon already listed: ${weapon.name}`);
+    return;
+  }
+
+  character = {
+    ...character,
+    weapons: [...character.weapons, weapon],
+  };
+  persist();
+  setStatus(`Added weapon: ${weapon.name}`);
+  render();
+}
+
+function removeWeapon(name: string): void {
+  character = {
+    ...character,
+    weapons: character.weapons.filter((entry) => entry.name !== name),
+  };
+  persist();
+  setStatus(`Removed weapon: ${name}`);
+  render();
+}
+
 function inventoryBox(): string {
   if (character.inventory.length === 0) {
     return `<p class="taken-traits-empty">No items in inventory yet.</p>`;
@@ -1375,6 +1804,9 @@ function bindSheetEvents(): void {
         );
         addSkill(kind, input?.value ?? "");
       }
+      if (action === "add-weapon") {
+        addWeapon();
+      }
       if (action === "add-inventory") {
         const input = document.querySelector<HTMLInputElement>("[data-inventory-input]");
         const amount = document.querySelector<HTMLInputElement>("[data-inventory-amount]");
@@ -1398,9 +1830,29 @@ function bindSheetEvents(): void {
     });
   });
 
+  document.querySelectorAll<HTMLButtonElement>("[data-remove-weapon]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      removeWeapon(btn.dataset.removeWeapon ?? "");
+    });
+  });
+
+  document.querySelectorAll<HTMLSelectElement>("[data-weapon-select]").forEach((select) => {
+    select.addEventListener("change", () => {
+      applyWeaponCatalogSelection(select.value);
+    });
+  });
+
   document.querySelectorAll<HTMLButtonElement>("[data-remove-inventory]").forEach((btn) => {
     btn.addEventListener("click", () => {
       removeInventoryItem(btn.dataset.removeInventory ?? "");
+    });
+  });
+
+  document.querySelectorAll<HTMLInputElement>("[data-weapon-field]").forEach((input) => {
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      addWeapon();
     });
   });
 
@@ -1468,11 +1920,7 @@ function bindSheetEvents(): void {
         // Status is set inside applyArmorTypeChange.
       }
       if (key === "armorMaterial") {
-        setStatus(
-          el.value
-            ? `Armor material set to ${el.value}.`
-            : "Armor material cleared.",
-        );
+        // Status is set inside applyArmorMaterialChange.
       }
     });
   });
@@ -1510,6 +1958,13 @@ function bindCatalogEvents(): void {
       if (action === "add-race") submitCatalogEntry("race");
       if (action === "add-class") submitCatalogEntry("class");
       if (action === "add-material") submitMaterialEntry();
+      if (action === "save-material") {
+        saveMaterialEntry(btn.dataset.materialName ?? "");
+      }
+      if (action === "add-catalog-weapon") submitCatalogWeaponEntry();
+      if (action === "save-weapon") {
+        saveCatalogWeaponEntry(btn.dataset.weaponName ?? "");
+      }
     });
   });
 
@@ -1554,9 +2009,22 @@ function bindCatalogEvents(): void {
       if (removeMaterial(name)) {
         if (character.armorMaterial === name) {
           character = { ...character, armorMaterial: "" };
-          persist();
+          applyArmorValues(character.armorType);
         }
         setCatalogStatus(`Removed material “${name}”.`);
+        render();
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-remove-weapon-catalog]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const name = btn.dataset.removeWeaponCatalog ?? "";
+      if (!name) return;
+      const ok = window.confirm(`Remove weapon “${name}” from the catalog?`);
+      if (!ok) return;
+      if (removeCatalogWeapon(name)) {
+        setCatalogStatus(`Removed weapon “${name}”.`);
         render();
       }
     });
@@ -1607,6 +2075,7 @@ function newCharacter(): void {
     character.skills.length > 0 ||
     character.classSkills.length > 0 ||
     character.racialSkills.length > 0 ||
+    character.weapons.length > 0 ||
     character.inventory.length > 0 ||
     character.history ||
     character.notes

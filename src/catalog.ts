@@ -1,4 +1,10 @@
-import { STAT_KEYS, STAT_LABELS, StatKey, clampNumber } from "./character";
+import {
+  STAT_KEYS,
+  STAT_LABELS,
+  StatKey,
+  WeaponItem,
+  clampNumber,
+} from "./character";
 
 export type StatModifiers = Partial<Record<StatKey, number>>;
 
@@ -7,13 +13,30 @@ export type CatalogEntry = {
   modifiers: StatModifiers;
 };
 
+export type MaterialEntry = {
+  name: string;
+  /** Added to each armor slot after armor-type base. */
+  armorBonus: number;
+  /** Added to Dodge Adjust after base dodge calculation. */
+  dodgeBonus: number;
+};
+
 export type GameCatalog = {
   races: CatalogEntry[];
   classes: CatalogEntry[];
-  materials: string[];
+  materials: MaterialEntry[];
+  weapons: WeaponItem[];
 };
 
-const CATALOG_STORAGE_KEY = "durands-game-catalog-v2";
+const CATALOG_STORAGE_KEY = "durands-game-catalog-v3";
+
+const DEFAULT_MATERIALS: MaterialEntry[] = [
+  { name: "Leather", armorBonus: 0, dodgeBonus: 0 },
+  { name: "Iron", armorBonus: 0, dodgeBonus: 0 },
+  { name: "Cloth", armorBonus: 0, dodgeBonus: 0 },
+  { name: "Steel", armorBonus: 0, dodgeBonus: 0 },
+  { name: "Kevlar", armorBonus: 0, dodgeBonus: 0 },
+];
 
 const DEFAULT_CATALOG: GameCatalog = {
   races: [
@@ -35,7 +58,8 @@ const DEFAULT_CATALOG: GameCatalog = {
       },
     },
   ],
-  materials: [],
+  materials: cloneMaterials(DEFAULT_MATERIALS),
+  weapons: [],
 };
 
 let catalog: GameCatalog = loadCatalog();
@@ -53,7 +77,33 @@ export function getClassNames(): string[] {
 }
 
 export function getMaterialNames(): string[] {
-  return [...catalog.materials];
+  return catalog.materials.map((entry) => entry.name);
+}
+
+export function getMaterials(): MaterialEntry[] {
+  return catalog.materials.map((entry) => ({ ...entry }));
+}
+
+export function getMaterial(name: string): MaterialEntry | null {
+  const found = catalog.materials.find(
+    (entry) => entry.name.toLowerCase() === name.trim().toLowerCase(),
+  );
+  return found ? { ...found } : null;
+}
+
+export function getWeaponNames(): string[] {
+  return catalog.weapons.map((entry) => entry.name);
+}
+
+export function getWeapons(): WeaponItem[] {
+  return catalog.weapons.map((entry) => ({ ...entry }));
+}
+
+export function getWeapon(name: string): WeaponItem | null {
+  const found = catalog.weapons.find(
+    (entry) => entry.name.toLowerCase() === name.trim().toLowerCase(),
+  );
+  return found ? { ...found } : null;
 }
 
 export function getRaceModifiers(race: string): StatModifiers {
@@ -77,22 +127,54 @@ export function addClass(
   return addEntry("classes", name, modifiers);
 }
 
-export function addMaterial(name: string): string | null {
+export function addMaterial(
+  name: string,
+  armorBonus = 0,
+  dodgeBonus = 0,
+): string | null {
   const trimmed = name.trim();
   if (!trimmed) return "Name is required.";
   if (
     catalog.materials.some(
-      (entry) => entry.toLowerCase() === trimmed.toLowerCase(),
+      (entry) => entry.name.toLowerCase() === trimmed.toLowerCase(),
     )
   ) {
     return "That material already exists.";
   }
   catalog = {
     ...catalog,
-    materials: [...catalog.materials, trimmed],
+    materials: [
+      ...catalog.materials,
+      {
+        name: trimmed,
+        armorBonus: clampNumber(armorBonus, -999, 999),
+        dodgeBonus: clampNumber(dodgeBonus, -999, 999),
+      },
+    ],
   };
   persistCatalog();
   return null;
+}
+
+export function updateMaterialBonuses(
+  name: string,
+  armorBonus: number,
+  dodgeBonus: number,
+): boolean {
+  const index = catalog.materials.findIndex((entry) => entry.name === name);
+  if (index < 0) return false;
+  const next = catalog.materials.map((entry, i) =>
+    i === index
+      ? {
+          ...entry,
+          armorBonus: clampNumber(armorBonus, -999, 999),
+          dodgeBonus: clampNumber(dodgeBonus, -999, 999),
+        }
+      : entry,
+  );
+  catalog = { ...catalog, materials: next };
+  persistCatalog();
+  return true;
 }
 
 export function removeRace(name: string): boolean {
@@ -104,9 +186,71 @@ export function removeClass(name: string): boolean {
 }
 
 export function removeMaterial(name: string): boolean {
-  const next = catalog.materials.filter((entry) => entry !== name);
+  const next = catalog.materials.filter((entry) => entry.name !== name);
   if (next.length === catalog.materials.length) return false;
   catalog = { ...catalog, materials: next };
+  persistCatalog();
+  return true;
+}
+
+export function addWeapon(weapon: WeaponItem): string | null {
+  const trimmed = weapon.name.trim();
+  if (!trimmed) return "Name is required.";
+  if (
+    catalog.weapons.some(
+      (entry) => entry.name.toLowerCase() === trimmed.toLowerCase(),
+    )
+  ) {
+    return "That weapon already exists.";
+  }
+  catalog = {
+    ...catalog,
+    weapons: [
+      ...catalog.weapons,
+      {
+        name: trimmed,
+        damage: weapon.damage.trim(),
+        magazineSize: weapon.magazineSize.trim(),
+        rateOfFire: weapon.rateOfFire.trim(),
+        consecutiveShot: weapon.consecutiveShot.trim(),
+        malfunctionChance: weapon.malfunctionChance.trim(),
+        statRequirement: weapon.statRequirement.trim(),
+        specialAbility: weapon.specialAbility.trim(),
+      },
+    ],
+  };
+  persistCatalog();
+  return null;
+}
+
+export function updateWeapon(name: string, weapon: WeaponItem): boolean {
+  const index = catalog.weapons.findIndex((entry) => entry.name === name);
+  if (index < 0) return false;
+  catalog = {
+    ...catalog,
+    weapons: catalog.weapons.map((entry, i) =>
+      i === index
+        ? {
+            name: entry.name,
+            damage: weapon.damage.trim(),
+            magazineSize: weapon.magazineSize.trim(),
+            rateOfFire: weapon.rateOfFire.trim(),
+            consecutiveShot: weapon.consecutiveShot.trim(),
+            malfunctionChance: weapon.malfunctionChance.trim(),
+            statRequirement: weapon.statRequirement.trim(),
+            specialAbility: weapon.specialAbility.trim(),
+          }
+        : entry,
+    ),
+  };
+  persistCatalog();
+  return true;
+}
+
+export function removeWeapon(name: string): boolean {
+  const next = catalog.weapons.filter((entry) => entry.name !== name);
+  if (next.length === catalog.weapons.length) return false;
+  catalog = { ...catalog, weapons: next };
   persistCatalog();
   return true;
 }
@@ -120,6 +264,25 @@ export function formatModifiers(modifiers: StatModifiers): string {
     },
   );
   return parts.length > 0 ? parts.join(", ") : "No stat adjustments";
+}
+
+export function formatMaterialBonuses(material: MaterialEntry): string {
+  const armorSign = material.armorBonus > 0 ? "+" : "";
+  const dodgeSign = material.dodgeBonus > 0 ? "+" : "";
+  return `Armor ${armorSign}${material.armorBonus}, Dodge ${dodgeSign}${material.dodgeBonus}`;
+}
+
+export function formatWeaponStats(weapon: WeaponItem): string {
+  const parts = [
+    weapon.damage && `Dmg ${weapon.damage}`,
+    weapon.magazineSize && `Mag ${weapon.magazineSize}`,
+    weapon.rateOfFire && `RoF ${weapon.rateOfFire}`,
+    weapon.consecutiveShot && `CSI ${weapon.consecutiveShot}`,
+    weapon.malfunctionChance && `Malf ${weapon.malfunctionChance}`,
+    weapon.statRequirement && `Req ${weapon.statRequirement}`,
+    weapon.specialAbility && `Ability ${weapon.specialAbility}`,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : "No weapon stats set";
 }
 
 export function cleanModifiers(
@@ -169,10 +332,10 @@ function removeEntry(kind: "races" | "classes", name: string): boolean {
 
 function loadCatalog(): GameCatalog {
   try {
-    // Prefer v2; fall back to v1 and migrate.
-    const rawV2 = localStorage.getItem(CATALOG_STORAGE_KEY);
+    const rawV3 = localStorage.getItem(CATALOG_STORAGE_KEY);
+    const rawV2 = localStorage.getItem("durands-game-catalog-v2");
     const rawV1 = localStorage.getItem("durands-game-catalog-v1");
-    const raw = rawV2 ?? rawV1;
+    const raw = rawV3 ?? rawV2 ?? rawV1;
     if (!raw) return cloneCatalog(DEFAULT_CATALOG);
     const parsed = parseCatalog(JSON.parse(raw));
     return parsed ?? cloneCatalog(DEFAULT_CATALOG);
@@ -194,7 +357,8 @@ function parseCatalog(data: unknown): GameCatalog | null {
   return {
     races,
     classes,
-    materials: parseNames(raw.materials) ?? [],
+    materials: ensureDefaultMaterials(parseMaterials(raw.materials)),
+    weapons: parseCatalogWeapons(raw.weapons),
   };
 }
 
@@ -220,18 +384,95 @@ function parseEntries(value: unknown): CatalogEntry[] | null {
   return entries;
 }
 
-function parseNames(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const names: string[] = [];
+function parseMaterials(value: unknown): MaterialEntry[] {
+  if (!Array.isArray(value)) return [];
+  const entries: MaterialEntry[] = [];
   const seen = new Set<string>();
+
   for (const item of value) {
-    if (typeof item !== "string") continue;
-    const name = item.trim();
+    if (typeof item === "string") {
+      const name = item.trim();
+      if (!name || seen.has(name.toLowerCase())) continue;
+      seen.add(name.toLowerCase());
+      entries.push({ name, armorBonus: 0, dodgeBonus: 0 });
+      continue;
+    }
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Record<string, unknown>;
+    if (typeof raw.name !== "string") continue;
+    const name = raw.name.trim();
     if (!name || seen.has(name.toLowerCase())) continue;
     seen.add(name.toLowerCase());
-    names.push(name);
+    entries.push({
+      name,
+      armorBonus: clampNumber(Number(raw.armorBonus ?? 0), -999, 999),
+      dodgeBonus: clampNumber(Number(raw.dodgeBonus ?? 0), -999, 999),
+    });
   }
-  return names;
+
+  return entries;
+}
+
+function parseCatalogWeapons(value: unknown): WeaponItem[] {
+  if (!Array.isArray(value)) return [];
+  const entries: WeaponItem[] = [];
+  const seen = new Set<string>();
+
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Record<string, unknown>;
+    if (typeof raw.name !== "string") continue;
+    const name = raw.name.trim();
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    entries.push({
+      name,
+      damage: stringField(raw.damage),
+      magazineSize: stringField(raw.magazineSize),
+      rateOfFire: stringField(raw.rateOfFire),
+      consecutiveShot: stringField(raw.consecutiveShot),
+      malfunctionChance: stringField(raw.malfunctionChance),
+      statRequirement: stringField(raw.statRequirement),
+      specialAbility: stringField(raw.specialAbility),
+    });
+  }
+
+  return entries;
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function ensureDefaultMaterials(materials: MaterialEntry[]): MaterialEntry[] {
+  const byName = new Map(
+    materials.map((entry) => [entry.name.toLowerCase(), entry]),
+  );
+  for (const defaults of DEFAULT_MATERIALS) {
+    if (!byName.has(defaults.name.toLowerCase())) {
+      byName.set(defaults.name.toLowerCase(), { ...defaults });
+    }
+  }
+  // Keep defaults first (in order), then any custom extras.
+  const merged: MaterialEntry[] = [];
+  const used = new Set<string>();
+  for (const defaults of DEFAULT_MATERIALS) {
+    const existing = byName.get(defaults.name.toLowerCase());
+    if (existing) {
+      merged.push(existing);
+      used.add(defaults.name.toLowerCase());
+    }
+  }
+  for (const entry of materials) {
+    if (used.has(entry.name.toLowerCase())) continue;
+    merged.push(entry);
+    used.add(entry.name.toLowerCase());
+  }
+  return merged;
+}
+
+function cloneMaterials(source: MaterialEntry[]): MaterialEntry[] {
+  return source.map((entry) => ({ ...entry }));
 }
 
 function cloneCatalog(source: GameCatalog): GameCatalog {
@@ -244,6 +485,7 @@ function cloneCatalog(source: GameCatalog): GameCatalog {
       name: entry.name,
       modifiers: { ...entry.modifiers },
     })),
-    materials: [...source.materials],
+    materials: cloneMaterials(source.materials),
+    weapons: source.weapons.map((entry) => ({ ...entry })),
   };
 }

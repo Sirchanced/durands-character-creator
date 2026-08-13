@@ -1,3 +1,19 @@
+export type InventoryItem = {
+  name: string;
+  amount: number;
+};
+
+export type WeaponItem = {
+  name: string;
+  damage: string;
+  magazineSize: string;
+  rateOfFire: string;
+  consecutiveShot: string;
+  malfunctionChance: string;
+  statRequirement: string;
+  specialAbility: string;
+};
+
 export type Character = {
   name: string;
   level: number;
@@ -36,14 +52,10 @@ export type Character = {
   skills: string[];
   classSkills: string[];
   racialSkills: string[];
+  weapons: WeaponItem[];
   inventory: InventoryItem[];
   history: string;
   notes: string;
-};
-
-export type InventoryItem = {
-  name: string;
-  amount: number;
 };
 
 export const LUCK_DIE_OPTIONS = [
@@ -176,19 +188,23 @@ export function calculateAdj(value: number): number {
   return Math.max(1, Math.floor(value / 3));
 }
 
-/** Dodge adjust starts at 10, plus Dexterity/Intelligence/Resilience ADJs and armor type bonus. */
-export function calculateDodgeAdjust(character: {
-  dexterity: number;
-  intelligence: number;
-  resilience: number;
-  armorType: string;
-}): number {
+/** Dodge adjust starts at 10, plus Dex/Int/Res ADJs, armor-type bonus, then material bonus. */
+export function calculateDodgeAdjust(
+  character: {
+    dexterity: number;
+    intelligence: number;
+    resilience: number;
+    armorType: string;
+  },
+  materialDodgeBonus = 0,
+): number {
   return (
     10 +
     calculateAdj(character.dexterity) +
     calculateAdj(character.intelligence) +
     calculateAdj(character.resilience) +
-    armorDodgeBonus(character.armorType)
+    armorDodgeBonus(character.armorType) +
+    materialDodgeBonus
   );
 }
 
@@ -209,11 +225,16 @@ export function armorDodgeBonus(armorType: string): number {
   return 0;
 }
 
+/** Slot values = armor-type base + material armor bonus (additive). */
 export function armorSlotsFromType(
   armorType: string,
   maxHealth: number,
+  materialArmorBonus = 0,
 ): Record<ArmorSlotKey | ArmorCurrentKey, number> {
-  const value = armorBaseValue(armorType, maxHealth);
+  const value = Math.max(
+    0,
+    armorBaseValue(armorType, maxHealth) + materialArmorBonus,
+  );
   return {
     armorHead: value,
     armorHeadCurrent: value,
@@ -271,6 +292,7 @@ export function createBlankCharacter(): Character {
     skills: [],
     classSkills: [],
     racialSkills: [],
+    weapons: [],
     inventory: [],
     history: "",
     notes: "",
@@ -442,10 +464,42 @@ export function parseCharacter(data: unknown): Character | null {
     skills: parseTraits(raw.skills),
     classSkills: parseTraits(raw.classSkills),
     racialSkills: parseTraits(raw.racialSkills),
+    weapons: parseWeapons(raw.weapons),
     inventory: parseInventory(raw.inventory),
     history: typeof raw.history === "string" ? raw.history : blank.history,
     notes: typeof raw.notes === "string" ? raw.notes : blank.notes,
   };
+}
+
+function parseWeapons(value: unknown): WeaponItem[] {
+  if (!Array.isArray(value)) return [];
+  const weapons: WeaponItem[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as Record<string, unknown>;
+    if (typeof raw.name !== "string") continue;
+    const name = raw.name.trim();
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    weapons.push({
+      name,
+      damage: stringField(raw.damage),
+      magazineSize: stringField(raw.magazineSize),
+      rateOfFire: stringField(raw.rateOfFire),
+      consecutiveShot: stringField(raw.consecutiveShot),
+      malfunctionChance: stringField(raw.malfunctionChance),
+      statRequirement: stringField(raw.statRequirement),
+      specialAbility: stringField(raw.specialAbility),
+    });
+  }
+
+  return weapons;
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
 }
 
 function parseInventory(value: unknown): InventoryItem[] {

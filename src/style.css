@@ -518,6 +518,144 @@ body {
   gap: 0.85rem;
 }
 
+.weapons-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.weapon-catalog-item {
+  align-items: start;
+}
+
+.weapon-catalog-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+  align-items: end;
+  margin-top: 0.65rem;
+}
+
+.weapon-catalog-wide {
+  grid-column: 1 / -1;
+}
+
+.weapon-catalog-fields .btn {
+  justify-self: start;
+}
+
+@media (max-width: 900px) {
+  .weapon-catalog-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .weapon-catalog-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+.weapons-section {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.weapons-add {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+  align-items: end;
+}
+
+.weapons-name-field,
+.weapons-ability-field {
+  grid-column: span 2;
+}
+
+.weapons-add-btn {
+  grid-column: 1 / -1;
+  justify-self: start;
+  border-radius: 10px;
+}
+
+.weapons-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.weapon-item {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.weapon-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.weapon-item-name {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.weapon-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem 0.85rem;
+  margin: 0;
+}
+
+.weapon-stats > div {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.weapon-stats dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.weapon-stats dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.weapon-ability {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+  .weapons-add {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .weapons-name-field,
+  .weapons-ability-field {
+    grid-column: 1 / -1;
+  }
+
+  .weapon-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .weapons-add {
+    grid-template-columns: 1fr;
+  }
+
+  .weapon-stats {
+    grid-template-columns: 1fr;
+  }
+}
+
 .inventory-section {
   display: grid;
   gap: 0.85rem;
@@ -767,9 +905,22 @@ body {
   gap: 0.7rem;
 }
 
-.catalog-add .btn {
-  justify-self: start;
-  border-radius: 10px;
+.material-item {
+  align-items: start;
+}
+
+.material-bonus-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  gap: 0.55rem;
+  align-items: end;
+  margin-top: 0.55rem;
+}
+
+@media (max-width: 700px) {
+  .material-bonus-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .status {
